@@ -112,6 +112,11 @@ type Conn struct {
 	latencyAutoRespond atomic.Bool
 	latencyMagnitude   atomic.Int64
 
+	// Diagnostics for the automatic latency responses, updated by respondLatency and read via LatencyStats.
+	latencyReplies       atomic.Int64 // total NetworkStackLatency pings answered
+	latencyMaxWriteNanos atomic.Int64 // slowest observed WritePacket+Flush of a reply, in nanoseconds
+	latencyLastReplyUnix atomic.Int64 // UnixNano of the most recent reply (0 if none)
+
 	identityData login.IdentityData
 	clientData   login.ClientData
 
@@ -526,6 +531,7 @@ func (conn *Conn) respondLatency(pkData *packetData) (err error) {
 	if !pk.NeedsResponse {
 		return nil
 	}
+	start := time.Now()
 	if werr := conn.WritePacket(&packet.NetworkStackLatency{
 		Timestamp:     pk.Timestamp * conn.latencyMagnitude.Load(),
 		NeedsResponse: false,
@@ -537,7 +543,28 @@ func (conn *Conn) respondLatency(pkData *packetData) (err error) {
 		_ = conn.close(ferr)
 		return ferr
 	}
+	elapsed := time.Since(start).Nanoseconds()
+	conn.latencyReplies.Add(1)
+	conn.latencyLastReplyUnix.Store(time.Now().UnixNano())
+	for {
+		m := conn.latencyMaxWriteNanos.Load()
+		if elapsed <= m || conn.latencyMaxWriteNanos.CompareAndSwap(m, elapsed) {
+			break
+		}
+	}
 	return nil
+}
+
+// LatencyStats returns diagnostics about the automatic NetworkStackLatency replies sent by this connection:
+// the total number answered, the slowest observed WritePacket+Flush duration of a reply, and the wall-clock
+// time of the most recent reply (zero time if none). All zero if EnableLatencyAutoResponse was never enabled.
+func (conn *Conn) LatencyStats() (replies int64, maxWrite time.Duration, lastReply time.Time) {
+	replies = conn.latencyReplies.Load()
+	maxWrite = time.Duration(conn.latencyMaxWriteNanos.Load())
+	if ns := conn.latencyLastReplyUnix.Load(); ns != 0 {
+		lastReply = time.Unix(0, ns)
+	}
+	return
 }
 
 // ResourcePacks returns a slice of all resource packs the connection holds. For a Conn obtained using a
