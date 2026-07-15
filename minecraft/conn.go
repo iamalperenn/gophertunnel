@@ -103,6 +103,15 @@ type Conn struct {
 	decodeFilterMu sync.Mutex
 	decodeFilter   map[uint32]struct{}
 
+	// latencyAutoRespond, when true, makes the internal read goroutine answer inbound server
+	// NetworkStackLatency pings itself (echoing Timestamp*latencyMagnitude, flushed immediately) before the
+	// packet is ever exposed to ReadPacket, then swallow it. Because the reply is generated at the lowest
+	// point in the read path, in the exact order pings arrive, it stays strictly FIFO and immune to any delay
+	// in the caller's ReadPacket loop. Enabled via EnableLatencyAutoResponse. This exists for DonutSMP's Boar
+	// anticheat, which kicks on any missing/out-of-order latency reply.
+	latencyAutoRespond atomic.Bool
+	latencyMagnitude   atomic.Int64
+
 	identityData login.IdentityData
 	clientData   login.ClientData
 
@@ -477,6 +486,60 @@ func (conn *Conn) shouldDecode(id uint32) bool {
 	return ok
 }
 
+// EnableLatencyAutoResponse makes the connection answer inbound NetworkStackLatency pings automatically on
+// the internal read goroutine, echoing Timestamp*magnitude and flushing immediately, before the packet is
+// ever exposed to ReadPacket; the ping is then swallowed and never returned by ReadPacket. Because replies
+// are generated at the lowest point of the read path in the exact order pings arrive, they stay strictly
+// FIFO and cannot be delayed by anything the caller does in its ReadPacket loop. magnitude must match what
+// the server divides the echoed timestamp by (1_000_000 for the default Minecraft stack); a value <= 0 is
+// treated as 1_000_000. Intended for client-side (Dial) connections talking to servers that run a latency
+// check such as DonutSMP's Boar anticheat. A write or flush failure while replying closes the connection so
+// the caller reconnects cleanly rather than silently skipping a ping (which would desync the check).
+func (conn *Conn) EnableLatencyAutoResponse(magnitude int64) {
+	if magnitude <= 0 {
+		magnitude = 1_000_000
+	}
+	conn.latencyMagnitude.Store(magnitude)
+	conn.latencyAutoRespond.Store(true)
+}
+
+// DisableLatencyAutoResponse turns off automatic NetworkStackLatency replies previously enabled with
+// EnableLatencyAutoResponse. Subsequent latency pings are delivered to ReadPacket like any other packet.
+func (conn *Conn) DisableLatencyAutoResponse() {
+	conn.latencyAutoRespond.Store(false)
+}
+
+// respondLatency decodes a server NetworkStackLatency ping held in pkData and, if it requests a response,
+// echoes it back with Timestamp*magnitude and flushes immediately. It is called only from the internal read
+// goroutine (via receive), so replies keep the exact order in which pings arrived. The packet is not
+// delivered to ReadPacket. On a write or flush failure the connection is closed and the error returned, so
+// the read loop tears down and the caller reconnects instead of leaving a skipped ping behind.
+func (conn *Conn) respondLatency(pkData *packetData) (err error) {
+	pk := &packet.NetworkStackLatency{}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("decode NetworkStackLatency: %v", r)
+		}
+	}()
+	r := conn.proto.NewReader(pkData.payload, conn.shieldID.Load(), conn.readerLimits)
+	pk.Marshal(r)
+	if !pk.NeedsResponse {
+		return nil
+	}
+	if werr := conn.WritePacket(&packet.NetworkStackLatency{
+		Timestamp:     pk.Timestamp * conn.latencyMagnitude.Load(),
+		NeedsResponse: false,
+	}); werr != nil {
+		_ = conn.close(werr)
+		return werr
+	}
+	if ferr := conn.Flush(); ferr != nil {
+		_ = conn.close(ferr)
+		return ferr
+	}
+	return nil
+}
+
 // ResourcePacks returns a slice of all resource packs the connection holds. For a Conn obtained using a
 // Listener, this holds all resource packs set to the Listener. For a Conn obtained using Dial, the resource
 // packs include all packs sent by the server connected to.
@@ -687,6 +750,10 @@ func (conn *Conn) receive(data []byte) error {
 		}
 		_ = conn.close(conn.closeErr(pks[0].(*packet.Disconnect).Message))
 		return nil
+	}
+	if conn.latencyAutoRespond.Load() && pkData.h.PacketID == packet.IDNetworkStackLatency {
+		// Answer the latency ping ourselves, in order, before it reaches ReadPacket, then swallow it.
+		return conn.respondLatency(pkData)
 	}
 	if conn.loggedIn && !conn.waitingForSpawn.Load() {
 		select {
