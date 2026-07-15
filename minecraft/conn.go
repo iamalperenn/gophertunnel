@@ -98,6 +98,11 @@ type Conn struct {
 	disconnectOnUnknownPacket bool
 	disconnectOnInvalidPacket bool
 
+	// decodeFilter, when non-nil, restricts which packet IDs ReadPacket fully decodes; others come back as a
+	// bare *packet.Unknown, skipping their payload unmarshal. Set via SetDecodeFilter. nil decodes everything.
+	decodeFilterMu sync.Mutex
+	decodeFilter   map[uint32]struct{}
+
 	identityData login.IdentityData
 	clientData   login.ClientData
 
@@ -442,6 +447,34 @@ func (conn *Conn) ReadPacket() (pk packet.Packet, err error) {
 		}
 		return pk[0], nil
 	}
+}
+
+// SetDecodeFilter restricts which packet IDs ReadPacket fully decodes; others come back as a bare
+// *packet.Unknown (payload left raw), avoiding the cost of deserializing packets the caller ignores. Only
+// safe once spawned (login needs every packet decoded). Passing no ids clears the filter.
+func (conn *Conn) SetDecodeFilter(ids ...uint32) {
+	conn.decodeFilterMu.Lock()
+	defer conn.decodeFilterMu.Unlock()
+	if len(ids) == 0 {
+		conn.decodeFilter = nil
+		return
+	}
+	filter := make(map[uint32]struct{}, len(ids))
+	for _, id := range ids {
+		filter[id] = struct{}{}
+	}
+	conn.decodeFilter = filter
+}
+
+// shouldDecode reports whether a packet with the given ID should be fully decoded under the current filter.
+func (conn *Conn) shouldDecode(id uint32) bool {
+	conn.decodeFilterMu.Lock()
+	defer conn.decodeFilterMu.Unlock()
+	if conn.decodeFilter == nil {
+		return true
+	}
+	_, ok := conn.decodeFilter[id]
+	return ok
 }
 
 // ResourcePacks returns a slice of all resource packs the connection holds. For a Conn obtained using a

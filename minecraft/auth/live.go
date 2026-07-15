@@ -163,13 +163,23 @@ func updateServerTimeFromHeaders(headers http.Header) {
 	serverTimeMu.Unlock()
 }
 
+// httpClient returns the HTTP client used for the Live Connect device-code and token-refresh requests.
+// It is conf.HTTPClient when set, allowing these requests to be routed through a proxy, and
+// http.DefaultClient otherwise.
+func (conf Config) httpClient() *http.Client {
+	if conf.HTTPClient != nil {
+		return conf.HTTPClient
+	}
+	return http.DefaultClient
+}
+
 // startDeviceAuth starts the device auth, retrieving a login URI for the user and a code the user needs to
 // enter.
 func (conf Config) startDeviceAuth() (*deviceAuthConnect, error) {
 	if conf.ClientID == "" {
 		panic(fmt.Errorf("minecraft/auth: missing ClientID for device auth"))
 	}
-	resp, err := http.PostForm("https://login.live.com/oauth20_connect.srf", url.Values{
+	resp, err := conf.httpClient().PostForm("https://login.live.com/oauth20_connect.srf", url.Values{
 		"client_id":     {conf.ClientID},
 		"scope":         {"service::user.auth.xboxlive.com::MBI_SSL"},
 		"response_type": {"device_code"},
@@ -188,7 +198,7 @@ func (conf Config) startDeviceAuth() (*deviceAuthConnect, error) {
 // pollDeviceAuth polls the token endpoint for the device code. A token is returned if the user authenticated
 // successfully. If the user has not yet authenticated, err is nil but the token is nil too.
 func (conf Config) pollDeviceAuth(deviceCode string) (t *oauth2.Token, err error) {
-	resp, err := http.PostForm(microsoft.LiveConnectEndpoint.TokenURL, url.Values{
+	resp, err := conf.httpClient().PostForm(microsoft.LiveConnectEndpoint.TokenURL, url.Values{
 		"client_id":   {conf.ClientID},
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		"device_code": {deviceCode},
@@ -223,7 +233,7 @@ func (conf Config) pollDeviceAuth(deviceCode string) (t *oauth2.Token, err error
 func (conf Config) refreshToken(t *oauth2.Token) (*oauth2.Token, error) {
 	// This function unfortunately needs to exist because golang.org/x/oauth2 does not pass the scope to this
 	// request, which Microsoft Connect enforces.
-	resp, err := http.PostForm(microsoft.LiveConnectEndpoint.TokenURL, url.Values{
+	resp, err := conf.httpClient().PostForm(microsoft.LiveConnectEndpoint.TokenURL, url.Values{
 		"client_id":     {conf.ClientID},
 		"scope":         {"service::user.auth.xboxlive.com::MBI_SSL"},
 		"grant_type":    {"refresh_token"},

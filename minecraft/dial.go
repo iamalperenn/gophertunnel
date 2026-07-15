@@ -45,6 +45,11 @@ type Dialer struct {
 	// If nil, [http.DefaultClient] is used.
 	HTTPClient *http.Client
 
+	// UpstreamDialer, if set, opens the underlying network connection (e.g. RakNet/UDP)
+	// instead of the default net.Dialer, letting callers route the game connection
+	// through a proxy. It is threaded to the Network via the dial context.
+	UpstreamDialer UpstreamDialer
+
 	// ClientData is the client data used to login to the server with. It includes fields such as the skin,
 	// locale and UUIDs unique to the client. If empty, a default is sent produced using defaultClientData().
 	ClientData login.ClientData
@@ -185,6 +190,9 @@ func (d Dialer) DialContextNetwork(ctx context.Context, network Network, address
 		if c, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); !ok || c == nil {
 			ctx = context.WithValue(ctx, oauth2.HTTPClient, d.HTTPClient)
 		}
+	}
+	if d.UpstreamDialer != nil {
+		ctx = context.WithValue(ctx, upstreamDialerKey{}, d.UpstreamDialer)
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P384(), cryptorand.Reader)

@@ -311,34 +311,30 @@ const (
 	StackRequestActionCraftResultsDeprecated
 )
 
-// transferStackRequestAction is the structure shared by StackRequestActions that transfer items from one
-// slot into another.
-type transferStackRequestAction struct {
-	// Count is the count of the item in the source slot that was taken towards the destination slot.
-	Count byte
-	// Source and Destination point to the source slot from which Count of the item stack were taken and the
-	// destination slot to which this item was moved.
-	Source, Destination StackRequestSlotInfo
+// TransferStackRequestAction is the structure shared by StackRequestActions
+// that transfer items from one slot into another.
+type TransferStackRequestAction struct {
+	Count               byte
+	Source, Destination  StackRequestSlotInfo
 }
 
 // Marshal ...
-func (a *transferStackRequestAction) Marshal(r IO) {
+func (a *TransferStackRequestAction) Marshal(r IO) {
 	r.Uint8(&a.Count)
 	StackReqSlotInfo(r, &a.Source)
 	StackReqSlotInfo(r, &a.Destination)
 }
 
-// TakeStackRequestAction is sent by the client to the server to take x amount of items from one slot in a
-// container to the cursor.
+// TakeStackRequestAction is sent by the client to the server to take x amount
+// of items from one slot in a container to the cursor.
 type TakeStackRequestAction struct {
-	transferStackRequestAction
+	TransferStackRequestAction
 }
 
-// PlaceStackRequestAction is sent by the client to the server to place x amount of items from one slot into
-// another slot, such as when shift clicking an item in the inventory to move it around or when moving an item
-// in the cursor into a slot.
+// PlaceStackRequestAction is sent by the client to the server to place x
+// amount of items from one slot into another slot.
 type PlaceStackRequestAction struct {
-	transferStackRequestAction
+	TransferStackRequestAction
 }
 
 // SwapStackRequestAction is sent by the client to swap the item in its cursor with an item present in another
@@ -417,12 +413,12 @@ func (a *CreateStackRequestAction) Marshal(r IO) {
 
 // PlaceInContainerStackRequestAction currently has no known purpose.
 type PlaceInContainerStackRequestAction struct {
-	transferStackRequestAction
+	TransferStackRequestAction
 }
 
 // TakeOutContainerStackRequestAction currently has no known purpose.
 type TakeOutContainerStackRequestAction struct {
-	transferStackRequestAction
+	TransferStackRequestAction
 }
 
 // LabTableCombineStackRequestAction is sent by the client when it uses a lab table to combine item stacks.

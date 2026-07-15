@@ -68,6 +68,11 @@ type Config struct {
 	Version string
 	// UserAgent is the 'User-Agent' header sent by the authentication library used in the client.
 	UserAgent string
+	// HTTPClient is the HTTP client used for the Microsoft Live Connect device-code and token-refresh
+	// requests (see live.go). If nil, http.DefaultClient is used. Set this to route those requests
+	// through a proxy. The Xbox Live and Minecraft-chain requests instead take their client from the
+	// context (oauth2.HTTPClient); the minecraft.Dialer wires that from its own HTTPClient field.
+	HTTPClient *http.Client
 }
 
 // defaultXBLHTTPClient is the default HTTP client used for requests made by Xbox Live auth helpers.
