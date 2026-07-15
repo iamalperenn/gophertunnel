@@ -117,6 +117,13 @@ type Conn struct {
 	latencyMaxWriteNanos atomic.Int64 // slowest observed WritePacket+Flush of a reply, in nanoseconds
 	latencyLastReplyUnix atomic.Int64 // UnixNano of the most recent reply (0 if none)
 
+	// latencyRing records the most recently received ping ids (their Timestamps) for post-kick diagnosis:
+	// whether Boar's "expected" id ever reached us (inbound loss) or did (lost outbound reply).
+	latencyRingMu  sync.Mutex
+	latencyRing    [512]int64
+	latencyRingLen int
+	latencyRingPos int
+
 	identityData login.IdentityData
 	clientData   login.ClientData
 
@@ -528,6 +535,7 @@ func (conn *Conn) respondLatency(pkData *packetData) (err error) {
 	}()
 	r := conn.proto.NewReader(pkData.payload, conn.shieldID.Load(), conn.readerLimits)
 	pk.Marshal(r)
+	conn.recordLatencyID(pk.Timestamp)
 	if !pk.NeedsResponse {
 		return nil
 	}
@@ -565,6 +573,35 @@ func (conn *Conn) LatencyStats() (replies int64, maxWrite time.Duration, lastRep
 		lastReply = time.Unix(0, ns)
 	}
 	return
+}
+
+// recordLatencyID appends a received ping id to the diagnostic ring (newest overwrites oldest at capacity).
+func (conn *Conn) recordLatencyID(id int64) {
+	conn.latencyRingMu.Lock()
+	conn.latencyRing[conn.latencyRingPos] = id
+	conn.latencyRingPos = (conn.latencyRingPos + 1) % len(conn.latencyRing)
+	if conn.latencyRingLen < len(conn.latencyRing) {
+		conn.latencyRingLen++
+	}
+	conn.latencyRingMu.Unlock()
+}
+
+// RecentLatencyIDs returns a snapshot of the most recently received NetworkStackLatency ping ids (their
+// Timestamps, oldest first). It is meant for diagnosing a Boar "expected=X" kick: if X is present the ping
+// reached us and the desync is a lost outbound reply; if X is absent the ping never arrived at all, i.e.
+// inbound server->client loss, which no client-side change can fix.
+func (conn *Conn) RecentLatencyIDs() []int64 {
+	conn.latencyRingMu.Lock()
+	defer conn.latencyRingMu.Unlock()
+	out := make([]int64, 0, conn.latencyRingLen)
+	if conn.latencyRingLen < len(conn.latencyRing) {
+		out = append(out, conn.latencyRing[:conn.latencyRingLen]...)
+		return out
+	}
+	// Ring is full: oldest entry is at latencyRingPos.
+	out = append(out, conn.latencyRing[conn.latencyRingPos:]...)
+	out = append(out, conn.latencyRing[:conn.latencyRingPos]...)
+	return out
 }
 
 // ResourcePacks returns a slice of all resource packs the connection holds. For a Conn obtained using a
